@@ -15,9 +15,12 @@ def get_data(input_path):
 
 		print('Parsing annotation files')
 
-		for line in f:
+		for i,line in enumerate(f):
+			# if i == 100:
+			# 	break
 			line_split = line.strip().split(',')
 			(filename,x1,y1,x2,y2,class_name) = line_split
+			print("[INFO] Processing {}...".format(filename))
 
 			if class_name not in classes_count:
 				classes_count[class_name] = 1

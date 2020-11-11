@@ -91,3 +91,6 @@ ENV/
 # hdf5
 *.h5
 *.hdf5
+checkpoints/
+results_imgs-fp-mappen-test/
+weights/

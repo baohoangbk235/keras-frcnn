@@ -13,6 +13,9 @@ from keras.layers import Input
 from keras.models import Model
 from keras.backend.tensorflow_backend import set_session
 from keras_frcnn import roi_helpers
+import json
+from PIL import Image,ImageDraw, ImageFont
+import random
 
 sys.setrecursionlimit(40000)
 
@@ -55,9 +58,43 @@ C.rot_90 = False
 
 img_path = options.test_path
 
+def parse_annotation(annot_file):
+  f = open(annot_file)
+  data = json.load(f)
+  all_imgs = []
+  seen_imgs = {}
+  seen_labels = {}
+  for img in data["images"]:
+    if img["id"] in seen_imgs:
+      seen_imgs[img["id"]] += 1
+    else:
+      seen_imgs[img["id"]] = 0
+      img["objects"] = []
+
+    for annot in data["annotations"]:
+      if annot["image_id"] == img["id"]:
+        obj = {}
+        obj["bbox"] = annot["bbox"]
+        obj["label_id"] = annot["category_id"]
+        obj["area"] = annot["area"]
+        for cat in data["categories"]:
+          if cat["id"] == obj["label_id"]:
+            obj["label_text"] = cat["name"]
+        if obj["label_text"] in seen_labels:
+          seen_labels[obj["label_text"]] += 1
+        else:
+          seen_labels[obj["label_text"]] = 0
+        img["objects"].append(obj)
+    all_imgs.append(img)  
+
+  f.close()
+  return all_imgs, seen_labels
+
 def format_img_size(img, C):
 	""" formats the image size based on config """
-	img_min_side = float(C.im_size)
+	# img_min_side = float(C.im_size)
+	img_min_side = float(416)
+
 	(height,width,_) = img.shape
 		
 	if width <= height:
@@ -140,9 +177,10 @@ model_classifier_only = Model([feature_map_input, roi_input], classifier)
 
 model_classifier = Model([feature_map_input, roi_input], classifier)
 
-print(f'Loading weights from {C.model_path}')
-model_rpn.load_weights(C.model_path, by_name=True)
-model_classifier.load_weights(C.model_path, by_name=True)
+c = "/home/phongbh/hieutb/baohg/models/keras-frcnn/checkpoints/model_frcnn_0021.hdf5"
+print(f'Loading weights from {c}')
+model_rpn.load_weights(c, by_name=True)
+model_classifier.load_weights(c, by_name=True)
 
 model_rpn.compile(optimizer='sgd', loss='mse')
 model_classifier.compile(optimizer='sgd', loss='mse')
@@ -151,14 +189,24 @@ all_imgs = []
 
 classes = {}
 
-bbox_threshold = 0.8
+bbox_threshold = 0.3
 
 visualise = True
+
+f = open("submission.json", "w")
+
+all_objects = []
+
+class2id = {}
+for id in class_mapping.keys():
+	class2id[class_mapping[id]] = id 
+
+print(class2id)
 
 for idx, img_name in enumerate(sorted(os.listdir(img_path))):
 	if not img_name.lower().endswith(('.bmp', '.jpeg', '.jpg', '.png', '.tif', '.tiff')):
 		continue
-	print(img_name)
+	print("[INFO] Processing {}...".format(img_name))
 	st = time.time()
 	filepath = os.path.join(img_path,img_name)
 
@@ -174,6 +222,24 @@ for idx, img_name in enumerate(sorted(os.listdir(img_path))):
 	
 
 	R = roi_helpers.rpn_to_roi(Y1, Y2, C, K.common.image_dim_ordering(), overlap_thresh=0.7)
+
+	img_check = img.copy()
+	tel = 0
+	for co in R:
+		if tel < 20:
+			(real_x1, real_y1, real_x2, real_y2) = get_real_coordinates(0.0625 * ratio, co[0], co[1], co[2], co[3])
+			kleur_1 = 0
+			kleur_2 = 0
+			kleur_3 = 60
+
+			kleur_1 = random.choice([0,255])
+			kleur_2 = random.choice([0,255])
+			kleur_3 = random.choice([0, 255])
+			
+			cv2.rectangle(img_check, (real_x1, real_y1), (real_x2, real_y2), (kleur_1, kleur_2, kleur_3), 2)
+		
+		tel += 1
+	cv2.imwrite(os.path.join("/home/phongbh/hieutb/baohg/za_traffic_2020/checking", img_name), img_check)
 
 	# convert from (x1,y1,x2,y2) to (x,y,w,h)
 	R[:, 2] -= R[:, 0]
@@ -230,7 +296,8 @@ for idx, img_name in enumerate(sorted(os.listdir(img_path))):
 	for key in bboxes:
 		bbox = np.array(bboxes[key])
 
-		new_boxes, new_probs = roi_helpers.non_max_suppression_fast(bbox, np.array(probs[key]), overlap_thresh=0.5)
+		obj = {}
+		new_boxes, new_probs = roi_helpers.non_max_suppression_fast(bbox, np.array(probs[key]), overlap_thresh=0.7)
 		for jk in range(new_boxes.shape[0]):
 			(x1, y1, x2, y2) = new_boxes[jk,:]
 
@@ -241,16 +308,28 @@ for idx, img_name in enumerate(sorted(os.listdir(img_path))):
 			textLabel = f'{key}: {int(100*new_probs[jk])}'
 			all_dets.append((key,100*new_probs[jk]))
 
+			obj["image_id"] = int(img_name.split(".")[0])
+			obj["category_id"] = class2id[key]
+			obj["bbox"] = [real_x1, real_y1, real_x2-real_x1, real_y2-real_y1]
+			obj["score"] = 1. * new_probs[jk]
+			all_objects.append(obj)
+
 			(retval,baseLine) = cv2.getTextSize(textLabel,cv2.FONT_HERSHEY_COMPLEX,1,1)
 			textOrg = (real_x1, real_y1-0)
 
-			cv2.rectangle(img, (textOrg[0] - 5, textOrg[1]+baseLine - 5), (textOrg[0]+retval[0] + 5, textOrg[1]-retval[1] - 5), (0, 0, 0), 2)
-			cv2.rectangle(img, (textOrg[0] - 5,textOrg[1]+baseLine - 5), (textOrg[0]+retval[0] + 5, textOrg[1]-retval[1] - 5), (255, 255, 255), -1)
-			cv2.putText(img, textLabel, textOrg, cv2.FONT_HERSHEY_DUPLEX, 1, (0, 0, 0), 1)
+			# cv2.rectangle(img, (textOrg[0] - 5, textOrg[1]+baseLine - 5), (textOrg[0]+retval[0] + 5, textOrg[1]-retval[1] - 5), (0, 0, 0), 2)
+			# cv2.rectangle(img, (textOrg[0] - 5,textOrg[1]+baseLine - 5), (textOrg[0]+retval[0] + 5, textOrg[1]-retval[1] - 5), (255, 255, 255), -1)
+			img_pil = Image.fromarray(img)
+			font = ImageFont.truetype("fonts/arial.ttf", size=18)
+			draw = ImageDraw.Draw(img_pil)
+			draw.text((real_x1, real_y1-25),  "{}:{}".format(key, int(new_probs[jk]*100)), font = font, fill = (255,0,0))
+			img = np.array(img_pil)
 
-	print(f'Elapsed time = {time.time() - st)}'
+	print(f'Elapsed time = {time.time() - st}')
 	print(all_dets)
-
 	
-	cv2.imwrite('./results_imgs-fp-mappen-test/{}.png'.format(os.path.splitext(str(img_name))[0]),img)
+	cv2.imwrite('models/keras-frcnn/results_imgs-fp-mappen-test/{}.png'.format(os.path.splitext(str(img_name))[0]),img)
 
+
+json.dump(all_objects, f)
+f.close()
